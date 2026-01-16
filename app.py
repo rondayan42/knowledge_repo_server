@@ -1,6 +1,6 @@
 """
 Knowledge Repository - Flask Backend Server
-PostgreSQL Async Version (Python port of Express server)
+SQLAlchemy ORM Version
 """
 
 import os
@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from flask import Flask, send_from_directory, jsonify
 from flask_cors import CORS
 from config import config
-from db import init_database, seed_default_data, get_pool
+from database import init_db, get_db, engine, Base
 from routes import register_blueprints
 from auth import admin_required
 
@@ -87,14 +87,9 @@ def run_migration():
     """Run database migrations (admin only)."""
     try:
         print('Running migration from web trigger...')
-        from db import query
-        
-        # Add created_by columns if they don't exist
-        query("ALTER TABLE tags ADD COLUMN IF NOT EXISTS created_by TEXT")
-        query("ALTER TABLE categories ADD COLUMN IF NOT EXISTS created_by TEXT")
-        query("ALTER TABLE departments ADD COLUMN IF NOT EXISTS created_by TEXT")
-        query("ALTER TABLE priorities ADD COLUMN IF NOT EXISTS created_by TEXT")
-        
+        # With SQLAlchemy, migrations are handled by create_all or Alembic
+        # This endpoint now just ensures all tables exist
+        Base.metadata.create_all(bind=engine)
         return jsonify({'success': True, 'message': 'Migration executed successfully'})
         
     except Exception as e:
@@ -123,6 +118,62 @@ def server_error(e):
     return jsonify({'error': 'Internal server error'}), 500
 
 
+def seed_default_data():
+    """Seed default categories, departments, and priorities using SQLAlchemy."""
+    from models.orm import Category, Department, Priority
+    
+    db = get_db()
+    try:
+        # Default categories
+        categories = [
+            ('הדרכה', 'מאמרי הדרכה והכשרה'),
+            ('נהלים', 'נהלי עבודה ותקנון'),
+            ('טכני', 'מידע טכני ותמיכה'),
+            ('שירות לקוחות', 'מידע לנציגי שירות'),
+            ('מכירות', 'חומרי מכירות ומידע מסחרי'),
+            ('כללי', 'מידע כללי')
+        ]
+        for name, desc in categories:
+            existing = db.query(Category).filter_by(name=name).first()
+            if not existing:
+                db.add(Category(name=name, description=desc))
+        
+        # Default departments
+        departments = [
+            ('תפעול', 'מחלקת תפעול'),
+            ('פיתוח', 'מחלקת פיתוח תוכנה'),
+            ('שיווק', 'מחלקת שיווק ופרסום'),
+            ('משאבי אנוש', 'מחלקת משאבי אנוש'),
+            ('הנהלה', 'הנהלת החברה'),
+            ('תמיכה טכנית', 'מחלקת תמיכה טכנית')
+        ]
+        for name, desc in departments:
+            existing = db.query(Department).filter_by(name=name).first()
+            if not existing:
+                db.add(Department(name=name, description=desc))
+        
+        # Default priorities
+        priorities = [
+            ('דחוף', 4, '#DC3545'),
+            ('גבוהה', 3, '#E74C5C'),
+            ('בינונית', 2, '#FFC107'),
+            ('נמוכה', 1, '#28A745')
+        ]
+        for name, level, color in priorities:
+            existing = db.query(Priority).filter_by(name=name).first()
+            if not existing:
+                db.add(Priority(name=name, level=level, color=color))
+        
+        db.commit()
+        print('✅ Default data seeded successfully')
+        
+    except Exception as e:
+        db.rollback()
+        print(f'Error seeding data: {e}')
+    finally:
+        db.close()
+
+
 # ==========================================
 # Main Entry Point
 # ==========================================
@@ -131,9 +182,9 @@ if __name__ == '__main__':
     # Ensure uploads directory exists
     os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
     
-    # Initialize database
+    # Initialize database with SQLAlchemy
     try:
-        init_database()
+        init_db()
         seed_default_data()
     except Exception as e:
         print(f'Failed to initialize database: {e}')
@@ -143,7 +194,7 @@ if __name__ == '__main__':
     print(f"""
 ╔════════════════════════════════════════════════════════╗
 ║                                                        ║
-║   Knowledge Repository Server (Flask/Postgres)        ║
+║   Knowledge Repository Server (Flask/SQLAlchemy)       ║
 ║                                                        ║
 ║   Server running at: http://localhost:{port}             ║
 ║   API available at:  http://localhost:{port}/api         ║

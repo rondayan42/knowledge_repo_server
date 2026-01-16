@@ -1,54 +1,78 @@
 """
-Tags model for Knowledge Repository
+Tags model for Knowledge Repository - SQLAlchemy version
 """
 
-from db import query
+from database import get_db
+from models.orm import Tag, ArticleTag
 
 
 class Tags:
     @staticmethod
     def get_all():
-        result = query('SELECT * FROM tags ORDER BY name')
-        return result['rows']
+        db = get_db()
+        try:
+            tags = db.query(Tag).order_by(Tag.name).all()
+            return [t.to_dict() for t in tags]
+        finally:
+            db.close()
     
     @staticmethod
     def get_by_id(id):
-        result = query('SELECT * FROM tags WHERE id = %s', (id,))
-        return result['rows'][0] if result['rows'] else None
+        db = get_db()
+        try:
+            tag = db.query(Tag).filter_by(id=id).first()
+            return tag.to_dict() if tag else None
+        finally:
+            db.close()
     
     @staticmethod
     def get_by_name(name):
-        result = query('SELECT * FROM tags WHERE name = %s', (name,))
-        return result['rows'][0] if result['rows'] else None
+        db = get_db()
+        try:
+            tag = db.query(Tag).filter_by(name=name).first()
+            return tag.to_dict() if tag else None
+        finally:
+            db.close()
     
     @staticmethod
     def create(name, creator_id=None):
-        # Check if tag already exists
-        existing = Tags.get_by_name(name)
-        if existing:
-            return existing
-        
-        result = query(
-            'INSERT INTO tags (name, created_by) VALUES (%s, %s) RETURNING id',
-            (name, creator_id)
-        )
-        return {
-            'id': result['rows'][0]['id'],
-            'name': name,
-            'created_by': creator_id
-        }
+        db = get_db()
+        try:
+            # Check if tag already exists
+            existing = db.query(Tag).filter_by(name=name).first()
+            if existing:
+                return existing.to_dict()
+            
+            tag = Tag(name=name, created_by=creator_id)
+            db.add(tag)
+            db.commit()
+            db.refresh(tag)
+            return tag.to_dict()
+        finally:
+            db.close()
     
     @staticmethod
     def delete(id):
-        query('DELETE FROM tags WHERE id = %s', (id,))
-        return True
+        db = get_db()
+        try:
+            tag = db.query(Tag).filter_by(id=id).first()
+            if tag:
+                db.delete(tag)
+                db.commit()
+            return True
+        finally:
+            db.close()
     
     @staticmethod
     def get_by_article_id(article_id):
-        result = query("""
-            SELECT t.* FROM tags t
-            JOIN article_tags at ON t.id = at.tag_id
-            WHERE at.article_id = %s
-            ORDER BY t.name
-        """, (article_id,))
-        return result['rows']
+        db = get_db()
+        try:
+            article_tags = db.query(ArticleTag).filter_by(article_id=article_id).all()
+            tags = []
+            for at in article_tags:
+                tag = db.query(Tag).filter_by(id=at.tag_id).first()
+                if tag:
+                    tags.append(tag.to_dict())
+            return sorted(tags, key=lambda t: t['name'])
+        finally:
+            db.close()

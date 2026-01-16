@@ -1,50 +1,64 @@
 """
-Favorites model for Knowledge Repository
+Favorites model for Knowledge Repository - SQLAlchemy version
 """
 
-from db import query
+from database import get_db
+from models.orm import UserFavorite, Article, Category, Department
 
 
 class Favorites:
     @staticmethod
     def get_user_favorites(user_id):
-        result = query("""
-            SELECT 
-                uf.article_id,
-                uf.created_at,
-                a.title,
-                a.summary,
-                c.name as category,
-                d.name as department
-            FROM user_favorites uf
-            JOIN articles a ON uf.article_id = a.id
-            LEFT JOIN categories c ON a.category_id = c.id
-            LEFT JOIN departments d ON a.department_id = d.id
-            WHERE uf.user_id = %s
-            ORDER BY uf.created_at DESC
-        """, (user_id,))
-        return result['rows']
+        db = get_db()
+        try:
+            favorites = db.query(UserFavorite).filter_by(user_id=user_id).order_by(UserFavorite.created_at.desc()).all()
+            result = []
+            for fav in favorites:
+                article = db.query(Article).filter_by(id=fav.article_id).first()
+                if article:
+                    category = db.query(Category).filter_by(id=article.category_id).first() if article.category_id else None
+                    department = db.query(Department).filter_by(id=article.department_id).first() if article.department_id else None
+                    result.append({
+                        'article_id': fav.article_id,
+                        'created_at': fav.created_at.isoformat() if fav.created_at else None,
+                        'title': article.title,
+                        'summary': article.summary,
+                        'category': category.name if category else None,
+                        'department': department.name if department else None
+                    })
+            return result
+        finally:
+            db.close()
     
     @staticmethod
     def add_favorite(user_id, article_id):
-        query(
-            'INSERT INTO user_favorites (user_id, article_id) VALUES (%s, %s) ON CONFLICT DO NOTHING',
-            (user_id, article_id)
-        )
-        return {'success': True}
+        db = get_db()
+        try:
+            # Check if already exists
+            existing = db.query(UserFavorite).filter_by(user_id=user_id, article_id=article_id).first()
+            if not existing:
+                favorite = UserFavorite(user_id=user_id, article_id=article_id)
+                db.add(favorite)
+                db.commit()
+            return {'success': True}
+        finally:
+            db.close()
     
     @staticmethod
     def remove_favorite(user_id, article_id):
-        query(
-            'DELETE FROM user_favorites WHERE user_id = %s AND article_id = %s',
-            (user_id, article_id)
-        )
-        return {'success': True}
+        db = get_db()
+        try:
+            db.query(UserFavorite).filter_by(user_id=user_id, article_id=article_id).delete()
+            db.commit()
+            return {'success': True}
+        finally:
+            db.close()
     
     @staticmethod
     def is_favorited(user_id, article_id):
-        result = query(
-            'SELECT 1 FROM user_favorites WHERE user_id = %s AND article_id = %s',
-            (user_id, article_id)
-        )
-        return len(result['rows']) > 0
+        db = get_db()
+        try:
+            exists = db.query(UserFavorite).filter_by(user_id=user_id, article_id=article_id).first()
+            return exists is not None
+        finally:
+            db.close()

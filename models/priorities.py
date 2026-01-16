@@ -1,49 +1,83 @@
 """
-Priorities model for Knowledge Repository
+Priorities model for Knowledge Repository - SQLAlchemy version
 """
 
-from db import query
+from sqlalchemy import func
+from database import get_db
+from models.orm import Priority, Article
 
 
 class Priorities:
     @staticmethod
     def get_all():
-        result = query('SELECT * FROM priorities ORDER BY level DESC')
-        return result['rows']
+        db = get_db()
+        try:
+            priorities = db.query(Priority).order_by(Priority.level.desc()).all()
+            return [p.to_dict() for p in priorities]
+        finally:
+            db.close()
     
     @staticmethod
     def get_by_id(id):
-        result = query('SELECT * FROM priorities WHERE id = %s', (id,))
-        return result['rows'][0] if result['rows'] else None
+        db = get_db()
+        try:
+            priority = db.query(Priority).filter_by(id=id).first()
+            return priority.to_dict() if priority else None
+        finally:
+            db.close()
     
     @staticmethod
     def create(name, level=0, color=None, creator_id=None):
-        result = query(
-            'INSERT INTO priorities (name, level, color, created_by) VALUES (%s, %s, %s, %s) RETURNING id',
-            (name, level, color, creator_id)
-        )
-        return {
-            'id': result['rows'][0]['id'],
-            'name': name,
-            'level': level,
-            'color': color,
-            'created_by': creator_id
-        }
+        db = get_db()
+        try:
+            priority = Priority(
+                name=name,
+                level=level,
+                color=color,
+                created_by=creator_id
+            )
+            db.add(priority)
+            db.commit()
+            db.refresh(priority)
+            return priority.to_dict()
+        finally:
+            db.close()
     
     @staticmethod
-    def update(id, name, level=0, color=None):
-        query(
-            'UPDATE priorities SET name = %s, level = %s, color = %s WHERE id = %s',
-            (name, level, color, id)
-        )
-        return Priorities.get_by_id(id)
+    def update(id, name, level=None, color=None):
+        db = get_db()
+        try:
+            priority = db.query(Priority).filter_by(id=id).first()
+            if priority:
+                priority.name = name
+                if level is not None:
+                    priority.level = level
+                if color is not None:
+                    priority.color = color
+                db.commit()
+                db.refresh(priority)
+                return priority.to_dict()
+            return None
+        finally:
+            db.close()
     
     @staticmethod
     def delete(id):
-        query('DELETE FROM priorities WHERE id = %s', (id,))
-        return True
+        db = get_db()
+        try:
+            priority = db.query(Priority).filter_by(id=id).first()
+            if priority:
+                db.delete(priority)
+                db.commit()
+            return True
+        finally:
+            db.close()
     
     @staticmethod
     def is_in_use(id):
-        result = query('SELECT COUNT(*) as count FROM articles WHERE priority_id = %s', (id,))
-        return int(result['rows'][0]['count']) > 0
+        db = get_db()
+        try:
+            count = db.query(func.count(Article.id)).filter(Article.priority_id == id).scalar()
+            return count > 0
+        finally:
+            db.close()

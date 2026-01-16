@@ -1,11 +1,12 @@
 """
-Articles model for Knowledge Repository
+Articles model for Knowledge Repository - SQLAlchemy version
 """
 
 import re
-from db import query
-from models.tags import Tags
-from models.attachments import Attachments
+from datetime import datetime
+from sqlalchemy import func, or_
+from database import get_db
+from models.orm import Article, Category, Department, Priority, Tag, ArticleTag, Attachment
 
 
 class Articles:
@@ -14,193 +15,190 @@ class Articles:
         if filters is None:
             filters = {}
         
-        sql = """
-            SELECT 
-                a.*,
-                c.name as category_name,
-                d.name as department_name,
-                p.name as priority_name,
-                p.color as priority_color,
-                p.level as priority_level
-            FROM articles a
-            LEFT JOIN categories c ON a.category_id = c.id
-            LEFT JOIN departments d ON a.department_id = d.id
-            LEFT JOIN priorities p ON a.priority_id = p.id
-            WHERE 1=1
-        """
-        params = []
-        
-        if filters.get('category_id'):
-            sql += " AND a.category_id = %s"
-            params.append(filters['category_id'])
-        
-        if filters.get('department_id'):
-            sql += " AND a.department_id = %s"
-            params.append(filters['department_id'])
-        
-        if filters.get('priority_id'):
-            sql += " AND a.priority_id = %s"
-            params.append(filters['priority_id'])
-        
-        sql += " ORDER BY a.updated_at DESC"
-        
-        result = query(sql, params if params else None)
-        articles = result['rows']
-        
-        # Get tags and attachments for each article
-        for article in articles:
-            article['tags'] = Tags.get_by_article_id(article['id'])
-            article['attachments'] = Attachments.get_by_article_id(article['id'])
-        
-        return articles
+        db = get_db()
+        try:
+            query = db.query(Article)
+            
+            if filters.get('category_id'):
+                query = query.filter(Article.category_id == filters['category_id'])
+            
+            if filters.get('department_id'):
+                query = query.filter(Article.department_id == filters['department_id'])
+            
+            if filters.get('priority_id'):
+                query = query.filter(Article.priority_id == filters['priority_id'])
+            
+            articles = query.order_by(Article.updated_at.desc()).all()
+            return [a.to_dict() for a in articles]
+        finally:
+            db.close()
     
     @staticmethod
     def get_by_id(id):
-        result = query("""
-            SELECT 
-                a.*,
-                c.name as category_name,
-                d.name as department_name,
-                p.name as priority_name,
-                p.color as priority_color,
-                p.level as priority_level
-            FROM articles a
-            LEFT JOIN categories c ON a.category_id = c.id
-            LEFT JOIN departments d ON a.department_id = d.id
-            LEFT JOIN priorities p ON a.priority_id = p.id
-            WHERE a.id = %s
-        """, (id,))
-        
-        if not result['rows']:
-            return None
-        
-        article = result['rows'][0]
-        article['tags'] = Tags.get_by_article_id(id)
-        article['attachments'] = Attachments.get_by_article_id(id)
-        
-        return article
+        db = get_db()
+        try:
+            article = db.query(Article).filter_by(id=id).first()
+            return article.to_dict() if article else None
+        finally:
+            db.close()
     
     @staticmethod
     def create(data):
-        result = query("""
-            INSERT INTO articles (title, summary, content, category_id, department_id, priority_id, author, author_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
-        """, (
-            data.get('title'),
-            data.get('summary'),
-            data.get('content'),
-            data.get('category_id'),
-            data.get('department_id'),
-            data.get('priority_id'),
-            data.get('author'),
-            data.get('author_id')
-        ))
-        
-        article_id = result['rows'][0]['id']
-        
-        # Add tags
-        tags = data.get('tags', [])
-        if tags:
-            Articles.set_tags(article_id, tags, data.get('author_id'))
-        
-        # Link attachments
-        attachment_ids = data.get('attachmentIds', [])
-        if attachment_ids:
-            Attachments.assign_to_article(article_id, attachment_ids)
-        
-        return Articles.get_by_id(article_id)
+        db = get_db()
+        try:
+            article = Article(
+                title=data.get('title'),
+                summary=data.get('summary'),
+                content=data.get('content'),
+                category_id=data.get('category_id'),
+                department_id=data.get('department_id'),
+                priority_id=data.get('priority_id'),
+                author=data.get('author'),
+                author_id=data.get('author_id')
+            )
+            db.add(article)
+            db.commit()
+            db.refresh(article)
+            
+            article_id = article.id
+            
+            # Add tags
+            tags = data.get('tags', [])
+            if tags:
+                Articles._set_tags_internal(db, article_id, tags, data.get('author_id'))
+            
+            # Link attachments
+            attachment_ids = data.get('attachmentIds', [])
+            if attachment_ids:
+                Articles._assign_attachments_internal(db, article_id, attachment_ids)
+            
+            db.commit()
+            
+            # Return fresh article with relations
+            article = db.query(Article).filter_by(id=article_id).first()
+            return article.to_dict()
+        finally:
+            db.close()
     
     @staticmethod
     def update(id, data):
-        query("""
-            UPDATE articles SET
-                title = %s,
-                summary = %s,
-                content = %s,
-                category_id = %s,
-                department_id = %s,
-                priority_id = %s,
-                author = %s,
-                author_id = %s,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-        """, (
-            data.get('title'),
-            data.get('summary'),
-            data.get('content'),
-            data.get('category_id'),
-            data.get('department_id'),
-            data.get('priority_id'),
-            data.get('author'),
-            data.get('author_id'),
-            id
-        ))
-        
-        # Update tags
-        tags = data.get('tags', [])
-        if tags is not None:
-            Articles.set_tags(id, tags, data.get('author_id'))
-        
-        # Update attachments
-        attachment_ids = data.get('attachmentIds', [])
-        if attachment_ids is not None:
-            Attachments.assign_to_article(id, attachment_ids)
-        
-        return Articles.get_by_id(id)
+        db = get_db()
+        try:
+            article = db.query(Article).filter_by(id=id).first()
+            if not article:
+                return None
+            
+            article.title = data.get('title')
+            article.summary = data.get('summary')
+            article.content = data.get('content')
+            article.category_id = data.get('category_id')
+            article.department_id = data.get('department_id')
+            article.priority_id = data.get('priority_id')
+            article.author = data.get('author')
+            article.author_id = data.get('author_id')
+            article.updated_at = datetime.utcnow()
+            
+            # Update tags
+            tags = data.get('tags', [])
+            if tags is not None:
+                Articles._set_tags_internal(db, id, tags, data.get('author_id'))
+            
+            # Update attachments
+            attachment_ids = data.get('attachmentIds', [])
+            if attachment_ids is not None:
+                Articles._assign_attachments_internal(db, id, attachment_ids)
+            
+            db.commit()
+            db.refresh(article)
+            return article.to_dict()
+        finally:
+            db.close()
     
     @staticmethod
     def delete(id):
-        query('DELETE FROM articles WHERE id = %s', (id,))
-        return True
+        db = get_db()
+        try:
+            article = db.query(Article).filter_by(id=id).first()
+            if article:
+                db.delete(article)
+                db.commit()
+            return True
+        finally:
+            db.close()
     
     @staticmethod
-    def set_tags(article_id, tag_names, author_id=None):
+    def _set_tags_internal(db, article_id, tag_names, author_id=None):
+        """Set tags for an article (internal, uses existing db session)."""
         # Remove existing tags
-        query('DELETE FROM article_tags WHERE article_id = %s', (article_id,))
+        db.query(ArticleTag).filter_by(article_id=article_id).delete()
         
         # Add new tags
         for tag_name in tag_names:
-            tag = Tags.create(tag_name, author_id)
-            query(
-                'INSERT INTO article_tags (article_id, tag_id) VALUES (%s, %s) ON CONFLICT DO NOTHING',
-                (article_id, tag['id'])
-            )
+            # Get or create tag
+            tag = db.query(Tag).filter_by(name=tag_name).first()
+            if not tag:
+                tag = Tag(name=tag_name, created_by=author_id)
+                db.add(tag)
+                db.flush()  # Get tag ID
+            
+            # Create article-tag association
+            article_tag = ArticleTag(article_id=article_id, tag_id=tag.id)
+            db.merge(article_tag)  # Use merge to handle duplicates
+    
+    @staticmethod
+    def _assign_attachments_internal(db, article_id, attachment_ids):
+        """Assign attachments to an article (internal, uses existing db session)."""
+        # Clear current links
+        db.query(Attachment).filter_by(article_id=article_id).update({'article_id': None})
+        
+        # Assign new attachments
+        for att_id in attachment_ids:
+            db.query(Attachment).filter_by(id=att_id).update({'article_id': article_id})
+    
+    @staticmethod
+    def set_tags(article_id, tag_names, author_id=None):
+        """Set tags for an article (public API)."""
+        db = get_db()
+        try:
+            Articles._set_tags_internal(db, article_id, tag_names, author_id)
+            db.commit()
+        finally:
+            db.close()
     
     @staticmethod
     def increment_views(id):
-        query('UPDATE articles SET views = views + 1 WHERE id = %s', (id,))
+        db = get_db()
+        try:
+            article = db.query(Article).filter_by(id=id).first()
+            if article:
+                article.views = (article.views or 0) + 1
+                db.commit()
+        finally:
+            db.close()
     
     @staticmethod
     def search(search_term):
-        result = query("""
-            SELECT 
-                a.*,
-                c.name as category_name,
-                d.name as department_name,
-                p.name as priority_name,
-                p.color as priority_color,
-                p.level as priority_level
-            FROM articles a
-            LEFT JOIN categories c ON a.category_id = c.id
-            LEFT JOIN departments d ON a.department_id = d.id
-            LEFT JOIN priorities p ON a.priority_id = p.id
-            WHERE 
-                a.title ILIKE %s OR 
-                a.summary ILIKE %s OR 
-                a.content ILIKE %s
-            ORDER BY a.updated_at DESC
-        """, (f'%{search_term}%', f'%{search_term}%', f'%{search_term}%'))
-        
-        articles = result['rows']
-        
-        # Enrich with tags and snippets
-        for article in articles:
-            article['tags'] = Tags.get_by_article_id(article['id'])
-            article['snippet'] = Articles._generate_snippet(article, search_term)
-            article['matchField'] = Articles._get_match_field(article, search_term)
-        
-        return articles
+        db = get_db()
+        try:
+            pattern = f'%{search_term}%'
+            articles = db.query(Article).filter(
+                or_(
+                    Article.title.ilike(pattern),
+                    Article.summary.ilike(pattern),
+                    Article.content.ilike(pattern)
+                )
+            ).order_by(Article.updated_at.desc()).all()
+            
+            result = []
+            for article in articles:
+                article_dict = article.to_dict()
+                article_dict['snippet'] = Articles._generate_snippet(article_dict, search_term)
+                article_dict['matchField'] = Articles._get_match_field(article_dict, search_term)
+                result.append(article_dict)
+            
+            return result
+        finally:
+            db.close()
     
     @staticmethod
     def _generate_snippet(article, search_term):
@@ -260,34 +258,35 @@ class Articles:
     
     @staticmethod
     def get_stats():
-        count_result = query('SELECT COUNT(*) as count FROM articles')
-        views_result = query('SELECT COALESCE(SUM(views), 0) as total FROM articles')
-        
-        cat_result = query("""
-            SELECT c.name, COUNT(a.id) as count 
-            FROM categories c 
-            LEFT JOIN articles a ON c.id = a.category_id 
-            GROUP BY c.id, c.name
-        """)
-        
-        dep_result = query("""
-            SELECT d.name, COUNT(a.id) as count 
-            FROM departments d 
-            LEFT JOIN articles a ON d.id = a.department_id 
-            GROUP BY d.id, d.name
-        """)
-        
-        recent_result = query("""
-            SELECT id, title, updated_at 
-            FROM articles 
-            ORDER BY updated_at DESC 
-            LIMIT 5
-        """)
-        
-        return {
-            'totalArticles': count_result['rows'][0]['count'],
-            'totalViews': views_result['rows'][0]['total'] or 0,
-            'byCategory': cat_result['rows'],
-            'byDepartment': dep_result['rows'],
-            'recentArticles': recent_result['rows']
-        }
+        db = get_db()
+        try:
+            # Total articles count
+            total_count = db.query(func.count(Article.id)).scalar()
+            
+            # Total views
+            total_views = db.query(func.coalesce(func.sum(Article.views), 0)).scalar()
+            
+            # By category
+            cat_stats = db.query(
+                Category.name,
+                func.count(Article.id).label('count')
+            ).outerjoin(Article, Category.id == Article.category_id).group_by(Category.id, Category.name).all()
+            
+            # By department
+            dep_stats = db.query(
+                Department.name,
+                func.count(Article.id).label('count')
+            ).outerjoin(Article, Department.id == Article.department_id).group_by(Department.id, Department.name).all()
+            
+            # Recent articles
+            recent = db.query(Article).order_by(Article.updated_at.desc()).limit(5).all()
+            
+            return {
+                'totalArticles': total_count or 0,
+                'totalViews': total_views or 0,
+                'byCategory': [{'name': name, 'count': count} for name, count in cat_stats],
+                'byDepartment': [{'name': name, 'count': count} for name, count in dep_stats],
+                'recentArticles': [{'id': a.id, 'title': a.title, 'updated_at': a.updated_at.isoformat() if a.updated_at else None} for a in recent]
+            }
+        finally:
+            db.close()

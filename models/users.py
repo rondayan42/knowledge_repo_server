@@ -1,65 +1,106 @@
 """
-Users model for Knowledge Repository
+Users model for Knowledge Repository - SQLAlchemy version
 """
 
-from db import query
+from datetime import datetime
+from database import get_db
+from models.orm import User
 
 
 class Users:
     @staticmethod
     def get_by_email(email):
-        result = query('SELECT * FROM users WHERE email = %s', (email,))
-        return result['rows'][0] if result['rows'] else None
+        db = get_db()
+        try:
+            user = db.query(User).filter_by(email=email).first()
+            return user.to_dict(include_password=True) if user else None
+        finally:
+            db.close()
     
     @staticmethod
     def get_by_id(id):
-        result = query(
-            'SELECT id, email, role, approved, is_root, created_at, last_login_at FROM users WHERE id = %s',
-            (id,)
-        )
-        return result['rows'][0] if result['rows'] else None
+        db = get_db()
+        try:
+            user = db.query(User).filter_by(id=id).first()
+            return user.to_dict() if user else None
+        finally:
+            db.close()
     
     @staticmethod
     def create(email, password_hash, role='user', approved=False):
-        result = query(
-            'INSERT INTO users (email, password_hash, role, approved) VALUES (%s, %s, %s, %s) RETURNING id, email, role, approved',
-            (email, password_hash, role, approved)
-        )
-        return result['rows'][0]
+        db = get_db()
+        try:
+            user = User(
+                email=email,
+                password_hash=password_hash,
+                role=role,
+                approved=approved
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            return user.to_dict()
+        finally:
+            db.close()
     
     @staticmethod
     def update_last_login(id):
-        query('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = %s', (id,))
+        db = get_db()
+        try:
+            user = db.query(User).filter_by(id=id).first()
+            if user:
+                user.last_login_at = datetime.utcnow()
+                db.commit()
+        finally:
+            db.close()
     
     @staticmethod
     def update_role(id, role):
-        result = query(
-            'UPDATE users SET role = %s WHERE id = %s RETURNING id, email, role, approved',
-            (role, id)
-        )
-        return result['rows'][0] if result['rows'] else None
+        db = get_db()
+        try:
+            user = db.query(User).filter_by(id=id).first()
+            if user:
+                user.role = role
+                db.commit()
+                db.refresh(user)
+                return user.to_dict()
+            return None
+        finally:
+            db.close()
     
     @staticmethod
     def update_approved(id, approved):
-        result = query(
-            'UPDATE users SET approved = %s WHERE id = %s RETURNING id, email, role, approved',
-            (approved, id)
-        )
-        return result['rows'][0] if result['rows'] else None
+        db = get_db()
+        try:
+            user = db.query(User).filter_by(id=id).first()
+            if user:
+                user.approved = approved
+                db.commit()
+                db.refresh(user)
+                return user.to_dict()
+            return None
+        finally:
+            db.close()
     
     @staticmethod
     def get_all():
-        result = query(
-            'SELECT id, email, role, approved, is_root, created_at, last_login_at FROM users ORDER BY created_at DESC'
-        )
-        return result['rows']
+        db = get_db()
+        try:
+            users = db.query(User).order_by(User.created_at.desc()).all()
+            return [u.to_dict() for u in users]
+        finally:
+            db.close()
     
     @staticmethod
     def delete(id):
-        # Check if user is root
-        user = Users.get_by_id(id)
-        if user and user.get('is_root'):
-            raise Exception('Cannot delete root user')
-        
-        query('DELETE FROM users WHERE id = %s', (id,))
-        return True
+        db = get_db()
+        try:
+            user = db.query(User).filter_by(id=id).first()
+            if user and user.is_root:
+                raise Exception('Cannot delete root user')
+            if user:
+                db.delete(user)
+                db.commit()
+            return True
+        finally:
+            db.close()

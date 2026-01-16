@@ -4,4 +4,6 @@ ENV POSTGRES_USER=admin
 ENV POSTGRES_PASSWORD=1234
 WORKDIR /app
 RUN apt-get update && apt-get install -y python3 python3-pip
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt  
+COPY . /app
+EXPOSE 5432
